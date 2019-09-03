@@ -1,3 +1,14 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//
+//          ========>>>>>> HELPER FUNCTIONS SECTION
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////
+
+var global_job_var = undefined
+
 function get_tab_url(){
     return new Promise((resolve, reject)=>{
         chrome.tabs.getSelected(null, function(tab){
@@ -25,6 +36,169 @@ function save_data_in_storage(data){
     chrome.storage.local.set({property_data : data}, function(){ });
 }
 
+function show_data(){
+    chrome.storage.local.get('property_data', function(data){
+       console.log(data) 
+    });
+}
+
+function get_request_flag(){ 
+    return new Promise((resolve, reject)=>{
+        chrome.storage.local.get('request_flag', function(flag){
+            if(flag != null){
+                resolve(flag)
+            }
+        });
+    });
+}
+function get_postCode_flag(){ 
+
+    return new Promise((resolve, reject)=>{
+        chrome.storage.local.get('postcode_flag', function(flag){
+            if(flag != null){
+                resolve(flag)
+            }
+        });
+    });
+
+}
+
+function set_request_flag(flag) {
+
+    chrome.storage.local.set({request_flag : flag}, function(){ });
+
+}
+function set_postCode_flag(flag) {
+
+    chrome.storage.local.set({postcode_flag : flag}, function(){ });
+
+} 
+
+function set_sale_value(value){
+    chrome.storage.local.set({sale_value : value}, function(){ });
+}
+
+function set_rent_value(value){
+    chrome.storage.local.set({rent_value : value}, function(){ });
+}
+
+function check_postcode_status(){
+    return new Promise((resolve, reject)=>{
+        chrome.storage.local.get('property_data', function(data){
+            var i = 0;
+            data = data['property_data']
+            console.log("checking data")
+            for (const key in data) {
+                if (data.hasOwnProperty(key)) {
+                    const element = data[key];
+                    // console.log(element)
+                    if( 'postcode' in element ){
+                        i += 1
+                    }
+                }
+            }
+            // console.log(data)
+            if( i >= 4){
+                set_postCode_flag(true)
+                flag = true
+                resolve(flag)
+            }else{
+                flag = false
+                resolve(flag)
+            }
+
+        });
+    });
+}
+
+async function checking(){
+    
+    postcode_flag = await get_postCode_flag()
+    var status = undefined
+    // console.log(postcode_flag["postcode_flag"])
+    if( postcode_flag["postcode_flag"] == false ){
+        // Object postcodes has not been updated yet so call this functions
+        status = await check_postcode_status()
+        // status == True ===> Postcodes have been updated so call main_function for further operations 
+        console.log('Status: ' + status)
+        if( status == true){
+            // console.log("Now going inside main")
+            get_main_page()
+            // Stop the JobDispatcher Function
+            stop_postcode_job()   
+        }
+
+    }
+
+}
+
+function start_postcode_job(){
+    global_job_var = setInterval(  function(){ 
+        console.log("Checking...")
+        checking() 
+    } , 10000);
+}
+
+function stop_postcode_job(){
+    clearInterval(global_job_var);
+}
+
+function filter_and_save(){
+    
+    return new Promise((resolve, reject)=>{
+        chrome.storage.local.get('property_data', function(data){
+            
+            data = data['property_data']
+            console.log("checking data")
+            for (const key in data) {
+                if (data.hasOwnProperty(key)) {
+                    const element = data[key];
+                    // console.log(element)
+                    if( !('postcode' in element) ){
+                        delete data[key]
+                    }else{
+
+                        // Checking for bedrooms and property category in Name
+                        index = element["Name"].search("bedroom")
+                        if( index == -1 ){
+                            delete data[key]
+                        }else{
+                            name = element["Name"]
+                            name = name.replace(/\s+/g,' ').trim();
+                            bedroom = name.charAt(0)
+                            element["Name"] = name
+
+                            if( (element["Name"].search("apartment")) >= 0 || (element["Name"].search("apartments")) >=0 ){
+                                type = "flats"                                
+                            }else{
+                                type = "houses"
+                            }
+
+                            element["bedroom"] = bedroom
+                            element["type"] = type
+                        }
+                    }
+                }
+            }
+            empty_storage()
+            save_data_in_storage(data)
+            resolve("Ok")
+        });
+    });
+}
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//
+//          ========>>>>>> END OF HELPER FUNCTIONS SECTION
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////
+
+
+
 ////////////////////////////////////////////////////////////////////////
 //
 //
@@ -37,38 +211,77 @@ function save_data_in_storage(data){
 
 async function get_main_page(){
 
-    url = await get_tab_url();
-    console.log(url)
-    var request = makeHttpObject();
-    var htmlRes;
-    request.open("GET", url, true);
-    request.send(null);
-    request.onreadystatechange = function() {
-        if (request.readyState == 4){
-            htmlRes = request.responseText
-            // console.log("HTML RESPONSE IS" + htmlRes)
-            data = extract_main(htmlRes);
-            if( data != -1){
-                // console.log(data)
-                // Simple filtered data set
-                data = filter_data(data)
-                save_data_in_storage(data)
-                // Now find the postcodes against the given addresses and get the new object
-                // new object will have post codes
-                data = get_object_with_postcode(data)
-                // console.log(data)
-                show_data()
+    // First we will check if their is another request pending 
+    // THis will help us in Controlling the number of requests 
+    // Flag = request_flag
+    //                ==> True = waiting for new requests
+    //                ==> False = not accepting new requests until the previous one is completed
+    //                            or Discard/Refresh btn is clicked  
+
+    request_flag = await get_request_flag()
+    console.log(request_flag["request_flag"])
+    if( request_flag["request_flag"] == true){   //Start working on the accepted request
+        
+        set_request_flag(false);  //Lock the requests
+        // Set flag to false so this will not acccept new requests
+
+        url = await get_tab_url();
+        console.log(url)
+        var request = makeHttpObject();
+        var htmlRes;
+        request.open("GET", url, true);
+        request.send(null);
+        request.onreadystatechange = function() {
+            if (request.readyState == 4){
+                htmlRes = request.responseText
+                // console.log("HTML RESPONSE IS" + htmlRes)
+                data = extract_main(htmlRes);
+                if( data != -1 ){
+                    // console.log(data)
+                    // Simple filtered data set
+                    data = filter_data(data)
+                    save_data_in_storage(data)
+                    // Now find the postcodes against the given addresses and get the new object
+                    // new object will have post codes
+                    get_object_with_postcode(data)  // this function will save the object in storage after getting the postcode
+                    start_postcode_job()
+                    // console.log(data)
+                    // show_data()
+                }
             }
+        };
+
+    } else if( request_flag["request_flag"] == false ){
+        // Now here we know that we have a request to be completed
+        // So We will add another flag here, which will check Weather the object is updated with PostCodes
+
+        // Flag = postCode_flag
+        //              ===> True = object has been updated with postcodes and ready for further opertaions
+        //              ===> False = object has not been updated with postcodes 
+
+
+        postcode_flag = await get_postCode_flag()
+        if( postcode_flag["postcode_flag"] == true){
+            stop_postcode_job()
+            console.log("Working on object with postcodes")
+            filter_status = await filter_and_save()
+            show_data()
+            // Now here we will find the 0.5 mile and 1 mile radius properties on zoopla against each postcode
+            // Then we will save the min and max values for sales, rent propertis against each postcode
+            // After All that we will calculate ROI/yeild/Investment
+
+            get_zoopla_data("0.50")
+
+        }else if( postcode_flag["postcode_flag"] == false){
+            console.log("Waiting for updated object...")
+            // Show progress
         }
-    };
+    }
+    // Now we have the object with Name, Address, Postcode, Price
+
 
 }
 
-function show_data(){
-    chrome.storage.local.get('property_data', function(data){
-       console.log(data) 
-    });
-}
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -302,10 +515,10 @@ function get_postcode(key, address){
                             if (datakey == key) {
                                 const element = data[datakey];
                                 element["postcode"] = components["postcode"]
-                                console.log(element)
+                                // console.log(element)
                             }
                         }
-                        console.log(data)
+                        // console.log(data)
                         empty_storage()
                         save_data_in_storage(data)
                     }
@@ -318,6 +531,7 @@ function get_postcode(key, address){
     });
 
 }
+
 
 function filter_address(address){
 
@@ -371,3 +585,259 @@ var getJSON = function(url, key, callback) {
     
 // });
 
+
+
+
+
+
+// Sample urls
+// For sale
+// https://www.zoopla.co.uk/search/?q=YO30%207AH&property_type=houses&beds_min=3&beds_max=3&category=residential&section=for-sale&radius=0.50
+
+// For rent
+// https://www.zoopla.co.uk/search/?q=YO30%207AH&property_type=houses&beds_min=3&beds_max=3&category=residential&section=to-rent&radius=0.50
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//          SECTION 3
+//              =======>>>>>>>   FETCHING DATA FROM ZOOPLA
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+
+function make_rent_url(bedroom, property_type, postcode, radius){
+    const base_url = "https://www.zoopla.co.uk/search/?q="
+    const type = "&property_type=" + property_type
+    const beds = "&beds_min=" + bedroom + "&beds_max=" + bedroom
+    const other_info = "&category=residential&section=to-rent&radius=" + radius
+    postcode = encodeURI(postcode)
+    url = base_url + postcode + type + beds + other_info
+
+    const final_url = encodeURI(url)
+
+    // console.log(final_url)
+    return final_url
+}
+
+
+function make_sale_url(bedroom, property_type, postcode, radius){
+
+    const base_url = "https://www.zoopla.co.uk/search/?q="
+    const type = "&property_type=" + property_type
+    const beds = "&beds_min=" + bedroom + "&beds_max=" + bedroom
+    const other_info = "&category=residential&section=for-sale&radius=" + radius
+    postcode = encodeURI(postcode)
+    url = base_url + postcode + type + beds + other_info
+
+    const final_url = encodeURI(url)
+
+    // console.log(final_url)
+    return final_url
+}
+
+
+// make_sale_url(3, "houses", "YO30", "0.50")
+// make_rent_url(3, "houses", "YO30", "0.50")
+
+// In this function we will get the min, max price for sale, rent properties using postcode
+function get_zoopla_data(radius){
+
+    get_sale_data(radius)
+    get_rent_data(radius)
+
+}
+
+function get_sale_data(radius){
+
+    chrome.storage.local.get('property_data', function(data){
+        
+        if( data != null ){
+
+            data = data["property_data"]
+            for (const key in data) {
+                if (data.hasOwnProperty(key)) {
+                    const element = data[key];
+                    
+                    const url_to_use = make_sale_url(element["bedroom"], element["type"], element["postcode"], radius)
+                    fetch_sale_data(key, url_to_use)
+                    // console.log("URL is: " + url)
+                }
+            }
+
+        }
+        
+    
+    });
+
+}
+
+function get_rent_data(radius){
+    chrome.storage.local.get('property_data', function(data){
+        
+        if( data != null ){
+
+            data = data["property_data"]
+            for (const key in data) {
+                if (data.hasOwnProperty(key)) {
+                    const element = data[key];
+                    
+                    const url_to_use = make_rent_url(element["bedroom"], element["type"], element["postcode"], radius)
+                    fetch_rent_data(key, url_to_use)
+                }
+            }
+
+        }
+        
+    
+    });
+}
+
+function fetch_sale_data(key, url){
+
+    var request = makeHttpObject();
+    var htmlRes;
+    request.open("GET", url, true);
+    request.send(null);
+    request.onreadystatechange = function() {
+        if (request.readyState == 4){
+            htmlRes = request.responseText
+            parse_and_save_sale_data(key, htmlRes)
+        }
+    }
+
+}
+
+
+function fetch_rent_data(key, url){
+    
+    var request = makeHttpObject();
+    var htmlRes;
+    request.open("GET", url, true);
+    request.send(null);
+    request.onreadystatechange = function() {
+        if (request.readyState == 4){
+            htmlRes = request.responseText
+            parse_and_save_rent_data(key, htmlRes)
+        }
+    }
+
+}
+
+
+// class="listing-results-price text-price"
+function parse_and_save_sale_data(key, htmlRes){
+    // var prices = []
+    index = htmlRes.search('class="listing-results-price text-price"')
+    
+    if( index != -1 ){
+        // Get all the data for prices maximum 10 and if less then 10 break the loop
+        var newstr = htmlRes
+        var prices = []
+        var i = 0;
+        var regexp = /class="listing-results-price text-price"/g;
+        var match, matches = [];
+
+        while ((match = regexp.exec(newstr)) != null) {
+            matches.push(match.index);
+        }
+
+        limit = matches.length
+        if( limit > 10){ limit = 10 }
+
+        while(i < limit ){
+            prices.push(get_sale_price(newstr.substr(matches[i], 1000)))
+            i +=1
+        }
+        // console.log(i)
+        min = find_min(prices)
+        max = find_max(prices)
+        // save in storage
+        save_sale_storage(key, min, max)
+        // console.log(prices)
+        // console.log(min)
+        // console.log(max)
+
+    }else{
+        // Save null to min and max data attribute
+        chrome.storage.local.get('property_data', function(data){
+        
+            if( data != null ){
+    
+                data = data["property_data"]
+                for (const data_key in data) {
+                    if (data.hasOwnProperty(data_key)) {
+                        if( key == data_key){
+                            const element = data[data_key];                        
+                            element["sale"] = {}
+                            element["sale"]["min"] = 0
+                            element["sale"]["max"] = 0
+                        }
+                    }
+                }
+    
+            } 
+        
+        });
+    }
+
+    //console.log(prices)
+
+}
+
+
+function parse_and_save_rent_data(key, htmlRes){
+
+}
+
+
+function get_sale_price(newstr){
+    // console.log(newstr)
+    // Find >
+    startIndex = newstr.search('&pound;')
+    startIndex += 7
+    // Then find </a>
+    endIndex = newstr.search('<')
+    endIndex = endIndex - startIndex
+    // Then filter and store
+    price = newstr.substr(startIndex, endIndex)
+    // price = price.replace(/\u00A3/g, '')
+    price = price.replace(/\s+/g,'').trim()
+    price = price.replace(/,/g, '')
+    var parsed = parseInt(price)
+    if (isNaN(parsed)) { return 0 }
+    return parsed;
+
+
+}
+
+
+function find_min(prices){
+    return Math.min.apply(Math, prices)
+}
+
+
+function find_max(prices){
+    return Math.max.apply(Math, prices)
+}
+
+
+function save_sale_storage(key, min, max){
+    
+}
+
+////////////////////////////////////////////////////////////////////////
+//
+//
+//
+//          ========>>>>>>>> SETTING UP DEFAULT VALUES
+            set_postCode_flag(false)
+            set_request_flag(true)
+            set_sale_value(-1)
+            set_rent_value(-1)
+//
+//
+//
+////////////////////////////////////////////////////////////////////////
