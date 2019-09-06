@@ -8,6 +8,12 @@
 ////////////////////////////////////////////////////////////////////////////
 
 var global_job_var = undefined
+var global_minmax_job_var = undefined
+var global_obj = {}
+global_obj["sale"] = {}
+global_obj["rent"] = {}
+var rent_value = 0
+var sale_value = 0
 
 function get_tab_url(){
     return new Promise((resolve, reject)=>{
@@ -74,6 +80,12 @@ function set_postCode_flag(flag) {
 
 } 
 
+function set_collected_flag(flag) {
+
+    chrome.storage.local.set({collected_flag : flag}, function(){ });
+
+} 
+
 function set_sale_value(value){
     chrome.storage.local.set({sale_value : value}, function(){ });
 }
@@ -132,6 +144,84 @@ async function checking(){
 
 }
 
+function get_values(type){
+
+    return new Promise( (resolve, reject)=>{
+        chrome.storage.local.get(type, function(data){
+            data = data[type]
+            if(data != null){
+                resolve(data)
+            }
+        });
+    } );
+
+}
+
+async function checking_minMax(){
+    // Completed Flag Will be true
+    // It will check by comparing minMax value by the data set, like type of iteration keys
+    // rent = await get_values("rent_value")
+    // sale = await get_values("sale_value")
+    // stop_minmax_job()
+
+    chrome.storage.local.get('property_data', function(data){
+        data = data["property_data"]
+        var size = Object.keys(data).length;
+        limit = size * 2
+        // console.log(data)
+        // console.log(global_obj)
+        console.log("Limit is: " + limit)
+        console.log('Rent Value: ' + rent_value)
+        console.log('sale Value: ' + sale_value)
+        // stop_minmax_job()
+        if( (rent_value >= limit) && (sale_value >= limit) ){
+            stop_minmax_job()
+            
+            for (const key in global_obj["rent"]) {
+                if (data.hasOwnProperty(key)) {
+                    data[key]["rent"] = global_obj["rent"][key]
+                }
+            }
+            for (const key in global_obj["sale"]) {
+                if (data.hasOwnProperty(key)) {
+                    data[key]["sale"] = global_obj["sale"][key]
+                }
+            }
+            
+            // var i = 0
+            for (const key in data) {
+                if (data.hasOwnProperty(key)) {
+                    const element = data[key];
+                    console.log("Data key is: " + key)
+                    if( (element["rent"]["r-1"]["min"] != 0) && (element["rent"]["r-1"]["max"] != 0)){
+                        element["ROI"] = calculate_ROI(element["rent"]["r-1"]["min"],element["rent"]["r-1"]["max"],element["Price"] )
+                        element["yeild"] = calculate_yield(element["rent"]["r-1"]["min"],element["rent"]["r-1"]["max"],element["Price"] )
+                        element["final_rent"] = calculate_rent(element["rent"]["r-1"]["min"],element["rent"]["r-1"]["max"] )
+                        // break;
+                    }else if( ( element["rent"]["r-5"]["min"] != 0) && (element["rent"]["r-5"]["max"] != 0) ){
+                        element["ROI"] = calculate_ROI(element["rent"]["r-5"]["min"],element["rent"]["r-5"]["max"],element["Price"] )
+                        element["yeild"] = calculate_yield(element["rent"]["r-5"]["min"],element["rent"]["r-5"]["max"],element["Price"] )
+                        element["final_rent"] = calculate_rent(element["rent"]["r-5"]["min"],element["rent"]["r-5"]["max"] )
+                        // break;
+                    }
+                }
+                
+            }
+
+            // console.log(data)
+            // console.log(global_obj)
+            console.log(data)
+            empty_storage()
+            save_data_in_storage(data)
+            // show_data()
+            set_collected_flag(true)
+        }         
+
+    });
+
+
+}
+
 function start_postcode_job(){
     global_job_var = setInterval(  function(){ 
         console.log("Checking...")
@@ -139,8 +229,19 @@ function start_postcode_job(){
     } , 10000);
 }
 
+function start_minmax_job(){
+    global_minmax_job_var = setInterval(  function(){ 
+        console.log("Checking Min Max Values...")
+        checking_minMax() 
+    } , 5000);
+}
+
 function stop_postcode_job(){
     clearInterval(global_job_var);
+}
+
+function stop_minmax_job(){
+    clearInterval(global_minmax_job_var);
 }
 
 function filter_and_save(){
@@ -163,9 +264,11 @@ function filter_and_save(){
                         if( index == -1 ){
                             delete data[key]
                         }else{
+                            element["sale"] = {}
+                            element["rent"] = {}
                             name = element["Name"]
                             name = name.replace(/\s+/g,' ').trim();
-                            bedroom = name.charAt(0)
+                            bedroom = name.split(" ")[0]
                             element["Name"] = name
 
                             if( (element["Name"].search("apartment")) >= 0 || (element["Name"].search("apartments")) >=0 ){
@@ -185,6 +288,104 @@ function filter_and_save(){
             resolve("Ok")
         });
     });
+}
+
+
+function calculate_ROI(min_rent, max_rent, property_value){
+    // Formula = (Income / Expenses) * 100
+    // Income = gross payment rent (annual) - mortgage payment
+
+    mortgage_rate = 5
+    mortgage = get_mortgage(property_value)
+    deposit = get_deposit(property_value)
+
+    // console.log('Mortgage_Value is: ' + mortgage)
+    // console.log('Deposit Value is: ' + deposit)
+
+    annual_interest = get_annual_interest(mortgage, mortgage_rate)
+
+    annual_income = get_annual_income(min_rent, max_rent)
+
+    // console.log('Annual interest is: ' + annual_interest)
+    // console.log('Annual Income is: ' + annual_income)
+
+    income = annual_income - annual_interest
+
+    roi = income / deposit
+
+    // console.log('Final Income is: ' + income)
+    // console.log('ROI Value is: ' + roi)
+    roi = roi * 100
+    roi = roi.toFixed(2)
+    return roi
+}
+
+function calculate_yield(min, max, property_value){
+    if(typeof(property_value) == 'string'){
+        property_value = property_value.replace(/,/g, '')
+        property_value = parseInt(property_value)
+    }
+
+    rent_income = calculate_rent(min, max)
+    rent_income = rent_income * 12
+
+    result = rent_income / property_value
+    result = result * 100
+
+    result = result.toFixed(2)
+
+    return result
+} 
+
+function calculate_rent(min, max){
+
+    sum = min + max
+    return (sum / 2)
+
+}
+
+
+function get_mortgage(property_value){
+    if(typeof(property_value) == 'string'){
+        property_value = property_value.replace(/,/g, '')
+        property_value = parseInt(property_value)
+    }
+
+    mortgage = property_value / 100
+    mortgage = mortgage * 75
+
+    return mortgage
+}
+function get_deposit(property_value){
+    if(typeof(property_value) == 'string'){
+        property_value = property_value.replace(/,/g, '')
+        property_value = parseInt(property_value)
+    }
+    
+    deposit = property_value / 100
+    deposit = deposit * 25
+    
+    return deposit
+}
+
+function get_annual_interest(mortgage, mortgage_rate){
+    if(typeof(mortgage) == 'string'){
+        mortgage = mortgage.replace(/,/g, '')
+        mortgage = parseInt(mortgage)
+    }
+    
+    interest = mortgage / 100
+    interest = interest * mortgage_rate
+    
+    return interest
+}
+
+function get_annual_income(min, max){
+    sum = min + max
+    sum = sum / 2
+
+    return sum * 12
+
 }
 
 
@@ -271,6 +472,9 @@ async function get_main_page(){
             // After All that we will calculate ROI/yeild/Investment
 
             get_zoopla_data("0.50")
+            get_zoopla_data("1.00")
+
+            start_minmax_job()   
 
         }else if( postcode_flag["postcode_flag"] == false){
             console.log("Waiting for updated object...")
@@ -331,11 +535,12 @@ function extract_main(htmlResponse){
                 propertyName = get_property_name(propertyString)
                 propertyAddress = get_property_address(propertyString)
                 propertyPrice = get_property_price(propertyString)
+                propertylink = get_property_link(propertyString)
 
                 obj["data_"+i]["Name"] = propertyName
                 obj["data_"+i]["Address"] = propertyAddress
                 obj["data_"+i]["Price"] = propertyPrice
-
+                obj["data_"+i]["link"] = propertylink
             }
         }
         return obj
@@ -432,6 +637,21 @@ function get_property_price(propertyString){
     return newstr.substr(startIndex, endIndex)
 }
 
+function get_property_link(propertyString){
+    var index = propertyString.search('class="propertyCard-link"')
+    newstr = propertyString.substr(index, 1000)
+    // finding href=
+    var startIndex = newstr.search('href="')
+    startIndex +=  6
+    // Then finding ">
+    var endIndex = newstr.search('.html"')
+    endIndex += 5
+    endIndex = endIndex - startIndex
+
+    str = newstr.substr(startIndex, endIndex)
+    str = "https://www.rightmove.co.uk" + str
+    return str
+}
 
 // THIS FUNCTION IF FOR THE FILTERTAION OF THE DATA
 function filter_data(data){
@@ -583,12 +803,7 @@ var getJSON = function(url, key, callback) {
 //         // console.log(key)
 //     }
     
-// });
-
-
-
-
-
+// })
 
 // Sample urls
 // For sale
@@ -613,6 +828,7 @@ function make_rent_url(bedroom, property_type, postcode, radius){
     const type = "&property_type=" + property_type
     const beds = "&beds_min=" + bedroom + "&beds_max=" + bedroom
     const other_info = "&category=residential&section=to-rent&radius=" + radius
+    postcode = postcode.split(" ")[0]
     postcode = encodeURI(postcode)
     url = base_url + postcode + type + beds + other_info
 
@@ -629,6 +845,7 @@ function make_sale_url(bedroom, property_type, postcode, radius){
     const type = "&property_type=" + property_type
     const beds = "&beds_min=" + bedroom + "&beds_max=" + bedroom
     const other_info = "&category=residential&section=for-sale&radius=" + radius
+    postcode = postcode.split(" ")[0]
     postcode = encodeURI(postcode)
     url = base_url + postcode + type + beds + other_info
 
@@ -653,17 +870,21 @@ function get_zoopla_data(radius){
 function get_sale_data(radius){
 
     chrome.storage.local.get('property_data', function(data){
-        
+        var i = 0
         if( data != null ){
 
             data = data["property_data"]
             for (const key in data) {
                 if (data.hasOwnProperty(key)) {
-                    const element = data[key];
-                    
-                    const url_to_use = make_sale_url(element["bedroom"], element["type"], element["postcode"], radius)
-                    fetch_sale_data(key, url_to_use)
-                    // console.log("URL is: " + url)
+                    // if( i < 3 ){
+                       const element = data[key];
+                        // console.log(key)
+                        const url_to_use = make_sale_url(element["bedroom"], element["type"], element["postcode"], radius)
+                        fetch_sale_data(key, url_to_use, radius)
+                    // console.log("FOR SALE")
+                    // console.log("URL is: " + url_to_use)
+                    // }
+                    // i +=1 
                 }
             }
 
@@ -676,16 +897,21 @@ function get_sale_data(radius){
 
 function get_rent_data(radius){
     chrome.storage.local.get('property_data', function(data){
-        
+        var i = 0;
         if( data != null ){
 
             data = data["property_data"]
             for (const key in data) {
                 if (data.hasOwnProperty(key)) {
-                    const element = data[key];
-                    
-                    const url_to_use = make_rent_url(element["bedroom"], element["type"], element["postcode"], radius)
-                    fetch_rent_data(key, url_to_use)
+                    // if(i < 3){
+                        const element = data[key];
+                        // console.log(key)
+                        const url_to_use = make_rent_url(element["bedroom"], element["type"], element["postcode"], radius)
+                        fetch_rent_data(key, url_to_use, radius)
+                    // console.log("FOR RENT")
+                    // console.log("URL is: " + url_to_use)
+                    // }
+                    // i += 1
                 }
             }
 
@@ -695,7 +921,7 @@ function get_rent_data(radius){
     });
 }
 
-function fetch_sale_data(key, url){
+function fetch_sale_data(key, url, radius){
 
     var request = makeHttpObject();
     var htmlRes;
@@ -704,14 +930,14 @@ function fetch_sale_data(key, url){
     request.onreadystatechange = function() {
         if (request.readyState == 4){
             htmlRes = request.responseText
-            parse_and_save_sale_data(key, htmlRes)
+            parse_and_save_sale_data(key, htmlRes, radius)
         }
     }
 
 }
 
 
-function fetch_rent_data(key, url){
+function fetch_rent_data(key, url, radius){
     
     var request = makeHttpObject();
     var htmlRes;
@@ -720,7 +946,7 @@ function fetch_rent_data(key, url){
     request.onreadystatechange = function() {
         if (request.readyState == 4){
             htmlRes = request.responseText
-            parse_and_save_rent_data(key, htmlRes)
+            parse_and_save_rent_data(key, htmlRes, radius)
         }
     }
 
@@ -728,7 +954,7 @@ function fetch_rent_data(key, url){
 
 
 // class="listing-results-price text-price"
-function parse_and_save_sale_data(key, htmlRes){
+function parse_and_save_sale_data(key, htmlRes, radius){
     // var prices = []
     index = htmlRes.search('class="listing-results-price text-price"')
     
@@ -755,40 +981,49 @@ function parse_and_save_sale_data(key, htmlRes){
         min = find_min(prices)
         max = find_max(prices)
         // save in storage
-        save_sale_storage(key, min, max)
-        // console.log(prices)
-        // console.log(min)
-        // console.log(max)
+        save_sale_storage(key, min, max, radius)
 
     }else{
         // Save null to min and max data attribute
-        chrome.storage.local.get('property_data', function(data){
-        
-            if( data != null ){
-    
-                data = data["property_data"]
-                for (const data_key in data) {
-                    if (data.hasOwnProperty(data_key)) {
-                        if( key == data_key){
-                            const element = data[data_key];                        
-                            element["sale"] = {}
-                            element["sale"]["min"] = 0
-                            element["sale"]["max"] = 0
-                        }
-                    }
-                }
-    
-            } 
-        
-        });
+        save_sale_storage(key, 0, 0, radius)
     }
 
     //console.log(prices)
-
 }
 
 
-function parse_and_save_rent_data(key, htmlRes){
+function parse_and_save_rent_data(key, htmlRes, radius){
+    index = htmlRes.search('class="listing-results-price text-price"')
+    
+    if( index != -1 ){
+        // Get all the data for prices maximum 10 and if less then 10 break the loop
+        var newstr = htmlRes
+        var prices = []
+        var i = 0;
+        var regexp = /class="listing-results-price text-price"/g;
+        var match, matches = [];
+
+        while ((match = regexp.exec(newstr)) != null) {
+            matches.push(match.index);
+        }
+
+        limit = matches.length
+        if( limit > 10){ limit = 10 }
+
+        while(i < limit ){
+            prices.push(get_rent_price(newstr.substr(matches[i], 1000)))
+            i +=1
+        }
+        // console.log(i)
+        min = find_min(prices)
+        max = find_max(prices)
+        // save in storage
+        save_rent_storage(key, min, max, radius)
+
+    }else{
+        // Save null to min and max data attribute
+        save_rent_storage(key, 0, 0, radius)
+    }
 
 }
 
@@ -810,9 +1045,30 @@ function get_sale_price(newstr){
     if (isNaN(parsed)) { return 0 }
     return parsed;
 
-
 }
 
+
+function get_rent_price(newstr){
+    // console.log(newstr)
+    // Find >
+    startIndex = newstr.search('&pound;')
+    startIndex += 7
+    // Then find </a>
+    endIndex = newstr.search('pcm')
+    endIndex = endIndex - startIndex
+    // console.log(endIndex)
+    // console.log(newstr)
+    // Then filter and store
+    price = newstr.substr(startIndex, endIndex)
+    // price = price.replace(/\u00A3/g, '')
+    price = price.replace(/\s+/g,'').trim()
+    price = price.replace(/,/g, '')
+    var parsed = parseInt(price)
+    // console.log(parsed)
+    if (isNaN(parsed)) { return 0 }
+    return parsed;
+    
+}
 
 function find_min(prices){
     return Math.min.apply(Math, prices)
@@ -823,9 +1079,58 @@ function find_max(prices){
     return Math.max.apply(Math, prices)
 }
 
+// global_obj["sale"] = {}
+// global_obj["rent"] = {}
 
-function save_sale_storage(key, min, max){
-    
+function save_sale_storage(key, min, max, radius){
+    if( global_obj["sale"][key] == undefined){
+        global_obj["sale"][key] = {}
+    }
+    if( radius == "0.50"){
+        global_obj["sale"][key]["r-5"] = {}
+        global_obj["sale"][key]["r-5"]["min"] = min
+        global_obj["sale"][key]["r-5"]["max"] = max
+    }else{
+        global_obj["sale"][key]["r-1"] = {}
+        global_obj["sale"][key]["r-1"]["min"] = min
+        global_obj["sale"][key]["r-1"]["max"] = max
+    }
+    // update_value('sale_value')
+    sale_value += 1
+    // console.log(sale_value)
+}
+
+function save_rent_storage(key, min, max, radius){
+
+    if( global_obj["rent"][key] == undefined ){
+        global_obj["rent"][key] = {}
+    }
+
+    if( radius == "0.50"){
+        global_obj["rent"][key]["r-5"] = {}
+        global_obj["rent"][key]["r-5"]["min"] = min
+        global_obj["rent"][key]["r-5"]["max"] = max
+    }else{
+        global_obj["rent"][key]["r-1"] = {}
+        global_obj["rent"][key]["r-1"]["min"] = min
+        global_obj["rent"][key]["r-1"]["max"] = max
+    }
+    // update_value('rent_value')
+    rent_value += 1
+    // console.log(rent_value)
+}
+
+
+function update_value(type){
+    chrome.storage.local.get(type, function(data){
+        data = data[type]
+        data += 1
+        if( type == 'sale_value'){
+            set_sale_value(data)
+        }else{
+            set_rent_value(data)
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -835,9 +1140,11 @@ function save_sale_storage(key, min, max){
 //          ========>>>>>>>> SETTING UP DEFAULT VALUES
             set_postCode_flag(false)
             set_request_flag(true)
-            set_sale_value(-1)
-            set_rent_value(-1)
+            set_sale_value(0)
+            set_rent_value(0)
+            set_collected_flag(false)
 //
 //
 //
 ////////////////////////////////////////////////////////////////////////
+// show_data()
